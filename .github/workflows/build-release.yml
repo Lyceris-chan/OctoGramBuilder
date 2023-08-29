@@ -1,0 +1,165 @@
+name: Build and Release OctoGram
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        type: choice
+        description: Choose whether to build a PBeta, Release, or Debug APK.
+        options:
+        - pbeta
+        - release
+        - debug
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:    
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'adopt'
+
+      - name: Set up Android NDK
+        run: |
+          # Source: https://github.com/forkgram/TelegramAndroid/blob/e68ea253f7c517da34a853e52d33606a34c6dc3d/.github/workflows/tandroid.yml#L47
+          # Set up Android NDK
+          ANDROID_ROOT=/usr/local/lib/android
+          ANDROID_SDK_ROOT=${ANDROID_ROOT}/sdk
+          SDKMANAGER=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager
+          echo "y" | $SDKMANAGER "ndk;21.4.7075529"
+
+          # Accept Android SDK licenses
+          yes | $ANDROID_HOME/tools/bin/sdkmanager --sdk_root=$ANDROID_HOME --licenses
+
+      - name: Clone OctoGramApp/OctoGram
+        run: |
+          git clone https://github.com/OctoGramApp/OctoGram --depth=1
+
+      - name: Clone Lyceris-chan/OctoGramBuilderSecrets
+        uses: GuillaumeFalourd/clone-github-repo-action@v2.1
+        with:
+          owner: 'Lyceris-chan'
+          repository: 'OctoGramBuilderSecrets'
+          access-token: ${{ secrets.ACCESS_TOKEN }}
+
+      - name: Setup private secrets
+        run: |
+          mv OctoGramBuilderSecrets/BuildVars.java OctoGram/TMessagesProj/src/main/java/org/telegram/messenger/BuildVars.java
+          mv OctoGramBuilderSecrets/google-services.json OctoGram/TMessagesProj_App/google-services.json
+          mv OctoGramBuilderSecrets/local.properties OctoGram/local.properties
+          mv OctoGramBuilderSecrets/signing.properties OctoGram/signing.properties
+          mv OctoGramBuilderSecrets/OctoGramBuilderSecret.jks OctoGram/TMessagesProj_App/OctoGramBuilderSecret.jks
+
+      - name: Change ccache binary permissions
+        run: |
+          cd OctoGram
+          chmod 777 Tools/ccache/linux/ccache
+
+      - name: Retrieve OctoGramApp/OctoGram HEAD commit hash
+        id: save-hash
+        run: |
+          cd OctoGram
+          hash=$(git rev-parse --short HEAD)
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Restore build cache from release
+        run: |
+          url="https://github.com/Lyceris-chan/OctoGramBuilder/releases/download/BuildCache/cache.tzst"
+
+          if curl --output /dev/null --silent --head --fail "$url"; then
+              echo "File exists. Downloading..."
+              curl -L -o cache.tzst "$url"
+          else
+              echo "File does not exist."
+          fi
+
+          /usr/bin/tar --posix -xf cache.tzst
+          sudo rsync -a --ignore-existing home/ /home/
+
+          rm -r home
+          rm cache.tzst
+          
+      - name: Notify Telegram - Build started
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TG_CHAT_ID }}
+          token: ${{ secrets.TG_TOKEN }}
+          format: markdown
+          disable_web_page_preview: true
+          message: |
+            **🔧 OctoGram CI Update:**
+            
+            ⚙️ Build initiated against commit: [${{ steps.save-hash.outputs.hash }}](https://github.com/OctoGramApp/OctoGram/commits/${{ steps.save-hash.outputs.hash }}).
+            
+            🏗️ Build variant: ${{ github.event.inputs.variant }}
+            
+            🔍 This is run: [#${{ github.run_number }}](${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}).
+
+            📜 Explore the complete commit history on [GitHub](https://github.com/OctoGramApp/OctoGram/commits/revamp).
+
+      - name: Build release APK
+        run: |
+          cd OctoGram
+          ./gradlew TMessagesProj_App:assemble${{ github.event.inputs.variant }} --parallel --no-configuration-cache --max-workers=$(nproc)
+          
+      - name: Archive build cache
+        run: |
+          echo "/home/runner/.cache/ccache" > manifest.txt
+          echo "/home/runner/work/OctoGramBuilder/OctoGramBuilder/OctoGram/TMessagesProj/.cxx" >> manifest.txt
+          /usr/bin/tar --posix -cf cache.tzst --exclude cache.tzst -P --files-from manifest.txt --use-compress-program zstdmt
+
+      - name: Upload build cache
+        uses: maggie0002/actions/packages/automatic-releases@built-packages
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: "BuildCache"
+          prerelease: false
+          title: "💾 OctoGram build cache"
+          files: |
+            cache.tzst
+            
+      - name: Upload OctoGram release
+        uses: maggie0002/actions/packages/automatic-releases@built-packages
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: "OctoGram_${{ steps.save-hash.outputs.hash }}"
+          prerelease: false
+          title: "🐙 OctoGram build: ${{ github.event.inputs.variant }}"
+          files: |
+            OctoGram/TMessagesProj_App/build/outputs/apk/release/*.apk
+
+  notify:
+    name: Notify
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check workflow status
+        uses: martialonline/workflow-status@v4
+        id: check
+
+      - name: Notify Telegram - Build status
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TG_CHAT_ID }}
+          token: ${{ secrets.TG_TOKEN }}
+          format: markdown
+          disable_web_page_preview: true
+          message: |
+            🔧 OctoGram CI Status Update:
+
+            ⚙️ Status: ${{ steps.check.outputs.status }}
+
+            🏗️ Build variant: ${{ github.event.inputs.variant }}
+
+            🔍 This is run: [#${{ github.run_number }}](${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}).
+
+            ✅ If the build was successful, you can find the release here:
+            📦 https://github.com/Lyceris-chan/OctoGramBuilder/releases/latest
+
