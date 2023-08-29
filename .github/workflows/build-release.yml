@@ -75,16 +75,16 @@ jobs:
           if curl --output /dev/null --silent --head --fail "$url"; then
               echo "File exists. Downloading..."
               curl -L -o cache.tzst "$url"
+    
+              /usr/bin/tar --posix -xf cache.tzst
+              sudo rsync -a --ignore-existing home/ /home/
+
+              rm -r home
+              rm cache.tzst
           else
               echo "File does not exist."
           fi
 
-          /usr/bin/tar --posix -xf cache.tzst
-          sudo rsync -a --ignore-existing home/ /home/
-
-          rm -r home
-          rm cache.tzst
-          
       - name: Notify Telegram - Build started
         uses: appleboy/telegram-action@master
         with:
