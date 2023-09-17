@@ -132,8 +132,8 @@ jobs:
           prerelease: false
           title: "🐙 OctoGram build: ${{ github.event.inputs.variant }}"
           files: |
-            OctoGram/TMessagesProj_App/build/outputs/apk/release/*.apk
-
+            OctoGram/TMessagesProj_App/build/outputs/apk/${{ github.event.inputs.variant }}/*.apk
+            
   notify:
     name: Notify
     needs: [build]
